@@ -15,6 +15,12 @@
       "title": "Default host",
       "description": "Host used by /where add when given a bare group/repo path, e.g. github.com or gitlab.example.com.",
       "default": "github.com"
+    },
+    "paneColumns": {
+      "type": "number",
+      "title": "Pane width",
+      "description": "Columns the pane asks for when docked beside the transcript. A width you drag the pane to wins.",
+      "default": 60
     }
   }
 }

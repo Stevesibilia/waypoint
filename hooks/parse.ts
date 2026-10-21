@@ -227,6 +227,14 @@ export const findMentionsInCommand = (command: string, defaultHost: string | nul
   return found
 }
 
+/** Whether the text after a reference already names the issue, as in `#34 Editable document templates`. */
+const startsWithTitle = (after: string, title: string) => {
+  const words = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const head = words(title).slice(0, 16)
+
+  return head.length > 0 && words(after.slice(0, title.length + 8)).startsWith(head)
+}
+
 /** `#12` → `#12 (title)` for every bare reference whose title is known, outside code. */
 export const annotateIssues = (text: string, titleOf: (number: number) => string | undefined): string => {
   let isFenced = false
@@ -246,10 +254,16 @@ export const annotateIssues = (text: string, titleOf: (number: number) => string
         .map((part, index) =>
           index % 2 === 1
             ? part
-            : part.replace(new RegExp(`${BARE.source}(?!\\s*\\()`, 'g'), (whole: string, digits: string) => {
-                const title = titleOf(Number(digits))
-                return title ? `${whole} (${title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title})` : whole
-              }),
+            : part.replace(
+                new RegExp(`${BARE.source}(?!\\s*\\()`, 'g'),
+                (whole: string, digits: string, offset: number, all: string) => {
+                  const title = titleOf(Number(digits))
+                  if (!title || startsWithTitle(all.slice(offset + whole.length), title)) {
+                    return whole
+                  }
+                  return `${whole} (${title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title})`
+                },
+              ),
         )
         .join('')
     })

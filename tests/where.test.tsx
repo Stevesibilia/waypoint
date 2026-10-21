@@ -227,4 +227,19 @@ test('the agent message shows issue titles, and the repo view lists what it ment
   expect((await ui.find({ type: 'Text', text: /^Profile texts · open/ }))?.text).toBe('Profile texts · open · phase 2/4')
   expect(await ui.find({ type: 'Text', text: /#77/ })).toBeUndefined()
   await ui.unmount()
+
+  await $.command.run(where('all'))
+  await clock.settle()
+  const all = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await all.find({ type: 'Text', text: /Mentioned in this session/ })).toBeDefined()
+  await all.unmount()
+})
+
+test('/where add takes several paths, also pasted as /where add lines', async ($, on) => {
+  const { clock } = world(on)
+  await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const added = await $.command.run(where('add github.com/steve/cronista\n/where add gitlab.example.com/tools/archive'))
+  expect(added.text).toBe('Tracking github.com/steve/cronista (github).\nTracking gitlab.example.com/tools/archive (gitlab).')
 })

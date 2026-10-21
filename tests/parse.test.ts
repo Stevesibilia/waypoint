@@ -139,4 +139,8 @@ test('titles go beside bare references, once, outside code', () => {
     'Next: #12 (TLS to the database on the homelab), #11 (done), #32, `#12`.',
   )
   expect(annotateIssues('```\n#12\n```', titleOf)).toBe('```\n#12\n```')
+  expect(annotateIssues('| #12 TLS to the database on the homelab | x |', titleOf)).toBe(
+    '| #12 TLS to the database on the homelab | x |',
+  )
+  expect(annotateIssues('**#11** · sign-in throttle, moot now', titleOf)).toBe('**#11** · sign-in throttle, moot now')
 })

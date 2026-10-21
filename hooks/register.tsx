@@ -169,6 +169,7 @@ export const bandText = (repo: RepoStatus): string => {
 
 // Module state: a reload starts it over, and session.start runs again after one.
 let defaultHost = 'github.com'
+let paneColumns = 60
 let isRunning = false
 let queued: { withAll: boolean } | null = null
 let ticker: { cancel: () => void } | null = null
@@ -308,7 +309,7 @@ async function openPane($: EngineInterface, view?: View) {
     await update($, viewAtom, () => view)
     await $.store.set('view', view)
   }
-  const placed = await $.ui.open({ id: PANE, title: 'Waypoint' })
+  const placed = await $.ui.open({ id: PANE, title: 'Waypoint', columns: paneColumns })
   await update($, paneAtom, () => true)
   void kick($, (await read($, viewAtom)) === 'all')
 
@@ -381,6 +382,10 @@ async function kick($: EngineInterface, withAll?: boolean) {
 
 export const register: Register = (on, options) => {
   defaultHost = typeof options.defaultHost === 'string' && options.defaultHost ? options.defaultHost : 'github.com'
+  paneColumns =
+    typeof options.paneColumns === 'number' && Number.isInteger(options.paneColumns) && options.paneColumns > 0
+      ? options.paneColumns
+      : 60
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -411,8 +416,18 @@ export const register: Register = (on, options) => {
       case 'repo':
       case 'all':
         return { text: await openPane($, sub) }
-      case 'add':
-        return { text: await addProject($, arg) }
+      case 'add': {
+        // Several paths at once, also when `/where add` lines are pasted together.
+        const paths = rest.filter(word => word !== '/where' && word !== 'add')
+        if (paths.length <= 1) {
+          return { text: await addProject($, paths[0] ?? '') }
+        }
+        const lines: string[] = []
+        for (const path of paths) {
+          lines.push(await addProject($, path))
+        }
+        return { text: lines.join('\n') }
+      }
       case 'remove':
       case 'rm':
         return { text: arg ? await removeProject($, arg) : 'Usage: /where remove <name or path>' }
@@ -535,6 +550,29 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // Mentions, in both views; a mention in the current repo reads `#N`, any other `group/repo#N`.
+    const herePath = repo?.project ?? null
+    const mentionList = mentions.length > 0 && (
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor>Mentioned in this session</Text>
+        {mentions.map(issue => {
+          const isHere = herePath !== null && sameProject(issue.project, herePath)
+          const ref = `${isHere ? '' : issue.project.path}${issue.isPullRequest && issue.project.forge === 'gitlab' ? '!' : '#'}${issue.number}`
+          const phase = issue.total > 0 ? ` · phase ${Math.min(issue.done + 1, issue.total)}/${issue.total}` : ''
+          return (
+            <Box key={`mention-${mentionKey(issue.project, issue.number)}`} flexDirection="row" gap={1}>
+              <Link href={issue.url} label={`  ${ref}`} />
+              <Text dimColor={issue.state !== 'open' && issue.state !== 'opened'} wrap="truncate-end">
+                {issue.isPullRequest ? 'PR ' : ''}
+                {issue.title} · {issue.state}
+                {phase}
+              </Text>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+
     if (view === 'all') {
       const here = repo?.project ?? null
       const others = (agents ?? []).filter(
@@ -575,6 +613,7 @@ export const register: Register = (on, options) => {
               {others.map(agent => agentRow(agent, `${agent.repoName} · ${agentDetail(agent)}`))}
             </Box>
           )}
+          {mentionList}
         </Box>
       )
     }
@@ -660,26 +699,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {mentions.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>Mentioned in this session</Text>
-            {mentions.map(issue => {
-              const isHere = project !== null && sameProject(issue.project, project)
-              const ref = `${isHere ? '' : issue.project.path}${issue.isPullRequest && issue.project.forge === 'gitlab' ? '!' : '#'}${issue.number}`
-              const phase = issue.total > 0 ? ` · phase ${Math.min(issue.done + 1, issue.total)}/${issue.total}` : ''
-              return (
-                <Box key={`mention-${mentionKey(issue.project, issue.number)}`} flexDirection="row" gap={1}>
-                  <Link href={issue.url} label={`  ${ref}`} />
-                  <Text dimColor={issue.state !== 'open' && issue.state !== 'opened'} wrap="truncate-end">
-                    {issue.isPullRequest ? 'PR ' : ''}
-                    {issue.title} · {issue.state}
-                    {phase}
-                  </Text>
-                </Box>
-              )
-            })}
-          </Box>
-        )}
+        {mentionList}
 
         {repo.issue?.lastComment && (
           <Box flexDirection="column" marginTop={1}>
