@@ -44,7 +44,8 @@ const world = (on: On, store: Record<string, unknown> = {}) => {
       return out([{ user: { login: 'claude' }, created_at: '2026-10-20T10:00:00Z', body: 'phase 1 merged, next: rendering' }])
     }
     if (args.includes('/pulls?')) return out([])
-    if (args.endsWith('repos/steve/cronista')) return out({})
+    if (args.endsWith('repos/steve/cronista') || args.endsWith('projects/tools%2Farchive')) return out({})
+    if (args.includes('projects/tools%2Farchive/issues?')) return out([])
     if (args.includes('repos/steve/cronista/issues?')) return out([ISSUE, { ...ISSUE, number: 13, body: '- [x] done' }])
     return { value: { ...RUN, exitCode: 1, stderr: `unexpected ${args}` } }
   })
@@ -121,4 +122,20 @@ test('a GitLab project is read through glab with its host', async ($, on) => {
   await $.command.run(where('add gitlab.example.com/tools/archive'))
 
   expect(calls).toContainEqual(['glab', 'api', '--hostname', 'gitlab.example.com', 'projects/tools%2Farchive'])
+})
+
+test('with All open, a project added shows up without pressing Refresh', async ($, on) => {
+  const { clock } = world(on)
+  await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
+  await $.command.run(where('all'))
+  await clock.settle()
+
+  expect((await $.command.run(where('add gitlab.example.com/tools/archive'))).text).toBe(
+    'Tracking gitlab.example.com/tools/archive (gitlab).',
+  )
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^archive/ }))?.text).toBe('archive')
+  expect(await ui.find({ type: 'Text', text: /nothing in progress/ })).toBeDefined()
+  await ui.unmount()
 })

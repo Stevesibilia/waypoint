@@ -58,6 +58,8 @@ declare module 'claude-code' {
       view: View
       projects: Project[]
       isLoading: boolean
+      /** Kept here, not in the module, so a reload knows the pane is still open. */
+      isPaneOpen: boolean
     }
   }
 }

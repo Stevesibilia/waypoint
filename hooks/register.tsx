@@ -31,6 +31,7 @@ const allAtom = atom({ plugin: 'waypoint', key: 'all' } as const, null)
 const viewAtom = atom({ plugin: 'waypoint', key: 'view' } as const, 'repo')
 const projectsAtom = atom({ plugin: 'waypoint', key: 'projects' } as const, [])
 const loadingAtom = atom({ plugin: 'waypoint', key: 'isLoading' } as const, false)
+const paneAtom = atom({ plugin: 'waypoint', key: 'isPaneOpen' } as const, false)
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -142,7 +143,6 @@ export const bandText = (repo: RepoStatus): string => {
 
 // Module state: a reload starts it over, and session.start runs again after one.
 let defaultHost = 'github.com'
-let isPaneOpen = false
 let isRunning = false
 let queued: { withAll: boolean } | null = null
 let ticker: { cancel: () => void } | null = null
@@ -174,7 +174,7 @@ async function refresh($: EngineInterface, withAll: boolean) {
 }
 
 async function wantsAll($: EngineInterface) {
-  return isPaneOpen && (await read($, viewAtom)) === 'all'
+  return (await read($, paneAtom)) && (await read($, viewAtom)) === 'all'
 }
 
 async function openPane($: EngineInterface, view?: View) {
@@ -183,7 +183,7 @@ async function openPane($: EngineInterface, view?: View) {
     await $.store.set('view', view)
   }
   const placed = await $.ui.open({ id: PANE, title: 'Waypoint' })
-  isPaneOpen = true
+  await update($, paneAtom, () => true)
   void kick($, (await read($, viewAtom)) === 'all')
 
   return placed.isPlaced ? 'Waypoint pane opened.' : `Waypoint pane not shown: ${placed.reason}`
@@ -305,11 +305,12 @@ export const register: Register = (on, options) => {
     }
   })
 
-  on('ui.close', ($, e, next) => {
+  on('ui.close', async ($, e, next) => {
+    const closed = await next(e)
     if (e.id === PANE) {
-      isPaneOpen = false
+      await update($, paneAtom, () => false)
     }
-    return next(e)
+    return closed
   })
 
   // Refresh soon after the agent changes what the band shows.
