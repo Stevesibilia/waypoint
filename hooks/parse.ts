@@ -235,26 +235,17 @@ const startsWithTitle = (after: string, title: string) => {
   return head.length > 0 && words(after.slice(0, title.length + 8)).startsWith(head)
 }
 
-/** The web page of issue `number`; GitHub sends a PR's number on to the PR. */
-export const issueUrl = (project: Project, number: number): string =>
-  project.forge === 'github'
-    ? `https://${project.host}/${project.path}/issues/${number}`
-    : `https://${project.host}/${project.path}/-/issues/${number}`
-
-/** What the display knows of a reference: where it links, and its title. */
-export type RefInfo = { url?: string; title?: string }
-
 // A reference, `group/repo#12` or bare `#12`, as the display rewrites it.
 const REF = /(?<![\w&/.#-])(?:([\w.-]+(?:\/[\w.-]+)+))?#(\d{1,6})(?!\w)/g
 // Left as written: inline code, Markdown links, URLs.
 const KEEP = /(`[^`]*`|\[[^\]]*\]\([^)]*\)|https?:\/\/[^\s)>\]]+)/
 
 /**
- * `#12` → `[#12](url) (title)` outside code, links and URLs: the link where
- * `lookup` gives a URL, the title where it gives one and the text after the
- * reference does not already name the issue or open a parenthesis.
+ * `#12` → `#12 (title)` outside code, links and URLs, where `titleOf` knows the
+ * title and the text after the reference does not already name the issue or
+ * open a parenthesis.
  */
-export const annotateIssues = (text: string, lookup: (path: string | null, number: number) => RefInfo | undefined): string => {
+export const annotateIssues = (text: string, titleOf: (path: string | null, number: number) => string | undefined): string => {
   let isFenced = false
 
   return text
@@ -273,15 +264,12 @@ export const annotateIssues = (text: string, lookup: (path: string | null, numbe
           index % 2 === 1
             ? part
             : part.replace(REF, (whole: string, path: string | undefined, digits: string, offset: number, all: string) => {
-                const info = lookup(path ?? null, Number(digits))
-                if (!info) {
+                const title = titleOf(path ?? null, Number(digits))
+                const after = all.slice(offset + whole.length)
+                if (!title || /^\s*\(/.test(after) || startsWithTitle(after, title)) {
                   return whole
                 }
-                const after = all.slice(offset + whole.length)
-                const link = info.url ? `[${whole}](${info.url})` : whole
-                const title = info.title
-                const hasTitle = !title || /^\s*\(/.test(after) || startsWithTitle(after, title)
-                return hasTitle ? link : `${link} (${title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title})`
+                return `${whole} (${title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title})`
               }),
         )
         .join('')

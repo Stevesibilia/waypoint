@@ -10,7 +10,6 @@ import {
   currentPhase,
   findMentionsInCommand,
   findMentionsInText,
-  issueUrl,
   issueFromBranch,
   parseProjectArg,
   parseRemote,
@@ -171,7 +170,6 @@ export const bandText = (repo: RepoStatus): string => {
 // Module state: a reload starts it over, and session.start runs again after one.
 let defaultHost = 'github.com'
 let paneColumns = 60
-let isLinking = false
 let isRunning = false
 let queued: { withAll: boolean } | null = null
 let ticker: { cancel: () => void } | null = null
@@ -258,17 +256,10 @@ async function learnTitles($: EngineInterface, project: Project) {
   }
 }
 
-/** A bare `#N` links only when it is known to be an issue here; `group/repo#N` names its repo. */
-const refInfo = (path: string | null, number: number) => {
+/** The title of `#N` in the current repo, or of `group/repo#N`, when known. */
+const titleOf = (path: string | null, number: number) => {
   const project = path === null ? hereProject : projectFrom(hereProject?.host ?? defaultHost, path)
-  if (!project) {
-    return undefined
-  }
-  const title = titles.get(mentionKey(project, number))
-  if (path === null && !title) {
-    return undefined
-  }
-  return { url: isLinking ? issueUrl(project, number) : undefined, title }
+  return project ? titles.get(mentionKey(project, number)) : undefined
 }
 
 /** The agent's text since the person's last message, plus the final answer. */
@@ -424,7 +415,6 @@ export const register: Register = (on, options) => {
     typeof options.paneColumns === 'number' && Number.isInteger(options.paneColumns) && options.paneColumns > 0
       ? options.paneColumns
       : 60
-  isLinking = options.issueLinks === true
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -527,11 +517,11 @@ export const register: Register = (on, options) => {
     return done
   })
 
-  // Links and titles for `#12` in the agent's messages: the drawing only,
+  // Titles beside `#12` in the agent's messages: the drawing only,
   // never the stored message or what the model reads.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const text = e.props.text
-    const annotated = annotateIssues(text, refInfo)
+    const annotated = annotateIssues(text, titleOf)
     return annotated === text ? next(e) : next({ ...e, props: { ...e.props, text: annotated } })
   })
 

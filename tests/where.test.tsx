@@ -203,7 +203,7 @@ test('the all view puts each session under its project, with the issue phase', a
   await ui.unmount()
 })
 
-test('the agent message shows issue titles, and links with issueLinks on', { options: { issueLinks: true } }, async ($, on) => {
+test('the agent message shows issue titles, and both views list what it mentioned', async ($, on) => {
   const { clock } = world(on)
   // The engine beneath: draws a message block as markdown, ends a turn as told.
   on('ui.render', { component: 'AssistantMessage' }, ($, e) => {
@@ -223,7 +223,7 @@ test('the agent message shows issue titles, and links with issueLinks on', { opt
       surface,
     })
     expect((await message.find({ key: 'text' }))?.text).toBe(
-      'Next: [#12](https://github.com/steve/cronista/issues/12) (Profile texts) and #77, see [steve/other#3](https://github.com/steve/other/issues/3).',
+      'Next: #12 (Profile texts) and #77, see steve/other#3.',
     )
     await message.unmount()
   }
@@ -253,23 +253,4 @@ test('/where add takes several paths, also pasted as /where add lines', async ($
 
   const added = await $.command.run(where('add github.com/steve/cronista\n/where add gitlab.example.com/tools/archive'))
   expect(added.text).toBe('Tracking github.com/steve/cronista (github).\nTracking gitlab.example.com/tools/archive (gitlab).')
-})
-
-test('without issueLinks the agent message gets titles and no links', async ($, on) => {
-  const { clock } = world(on)
-  on('ui.render', { component: 'AssistantMessage' }, ($, e) => {
-    const { Markdown } = $.ui.resolve(e)
-    return <Markdown key="text" text={e.props.text} />
-  })
-  await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
-  await clock.settle()
-
-  const message = await $.ui.mount({
-    plugin: 'waypoint',
-    component: 'AssistantMessage',
-    props: { text: 'Next: #12, see steve/other#3.', isFirstOfReply: true },
-    surface: 'terminal',
-  })
-  expect((await message.find({ key: 'text' }))?.text).toBe('Next: #12 (Profile texts), see steve/other#3.')
-  await message.unmount()
 })

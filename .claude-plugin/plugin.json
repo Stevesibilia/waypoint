@@ -1,6 +1,6 @@
 {
   "name": "waypoint",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Shows which phase a change is in, from the issue's checklist and the OpenSpec tasks, for the current repo and every tracked project.",
   "author": {
     "name": "Stefano Sibilia"
@@ -21,12 +21,6 @@
       "title": "Pane width",
       "description": "Columns the pane asks for when docked beside the transcript. A width you drag the pane to wins.",
       "default": 60
-    },
-    "issueLinks": {
-      "type": "boolean",
-      "title": "Link issue references",
-      "description": "Turn #12 and group/repo#12 in the agent's messages into links. Leave off where the terminal shows a link as its text followed by the URL.",
-      "default": false
     }
   }
 }
