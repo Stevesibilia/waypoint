@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Agent, AgentStatus, MentionedIssue, OpenIssue, Project, ProjectRow, RepoStatus, Tasks, View } from '../types'
-import { git, readAgents } from './agents'
+import { git, readAgents, readTasks } from './agents'
 import { checkProject, fetchIssue, fetchIssueSummary, fetchOpenIssues, fetchOpenTitles } from './forge'
 import type { Mention } from './parse'
 import {
@@ -13,7 +13,6 @@ import {
   issueFromBranch,
   parseProjectArg,
   parseRemote,
-  parseTasks,
   projectFrom,
   projectName,
   sameProject,
@@ -54,14 +53,15 @@ const AGENT_LOOK: Record<AgentStatus, { glyph: string; label: string; color?: 's
 
 /** What an agent is on: its issue, with title and phase when the issue is known, else its branch. */
 const agentDetail = (agent: Agent, issues: readonly OpenIssue[] = []) => {
+  const tasks = agent.tasks && agent.tasks.total > 0 ? ` · tasks ${agent.tasks.done}/${agent.tasks.total}` : ''
   if (agent.issueNumber === null) {
-    return agent.branch || 'no branch'
+    return `${agent.branch || 'no branch'}${tasks}`
   }
   const issue = issues.find(one => one.number === agent.issueNumber)
+  const phase = issue ? ` · phase ${Math.min(issue.done + 1, issue.total)}/${issue.total}` : ''
+  const name = issue ? `#${issue.number} ${issue.title}` : `#${agent.issueNumber}${agent.slug ? ` ${agent.slug}` : ''}`
 
-  return issue
-    ? `#${issue.number} ${issue.title} · phase ${Math.min(issue.done + 1, issue.total)}/${issue.total}`
-    : `#${agent.issueNumber}${agent.slug ? ` ${agent.slug}` : ''}`
+  return `${name}${phase}${tasks}`
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -77,30 +77,6 @@ const isProject = (value: unknown): value is Project => {
 const currentProject = async ($: EngineInterface): Promise<Project | null> => {
   const remote = parseRemote(await git($, ['remote', 'get-url', 'origin']))
   return remote ? projectFrom(remote.host, remote.path) : null
-}
-
-/** The change folder: the branch's slug, else the one naming the branch, else the only active one. */
-const readTasks = async ($: EngineInterface, top: string, slug: string, branch: string): Promise<Tasks | null> => {
-  const root = `${top}/openspec/changes`
-  if (!(await $.fs.exists(root))) {
-    return null
-  }
-  const names = (await $.fs.list(root))
-    .filter(entry => entry.kind === 'dir' && entry.name !== 'archive')
-    .map(entry => entry.name)
-  const texts = new Map<string, string>()
-  for (const name of names) {
-    const text = await $.fs.read(`${root}/${name}/tasks.md`).catch(() => null)
-    if (text !== null) {
-      texts.set(name, text)
-    }
-  }
-  const change =
-    (slug && texts.has(slug) ? slug : undefined) ??
-    (branch ? [...texts].find(([, text]) => text.includes(branch))?.[0] : undefined) ??
-    (texts.size === 1 ? [...texts.keys()][0] : undefined)
-
-  return change === undefined ? null : { change, groups: parseTasks(texts.get(change) ?? '') }
 }
 
 const readRepo = async ($: EngineInterface): Promise<RepoStatus | null> => {

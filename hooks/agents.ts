@@ -5,8 +5,8 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import type { Agent, Project } from '../types'
-import { issueFromBranch, parseRegistryEntry, parseRemote, projectFrom, projectName } from './parse'
+import type { Agent, Project, Tasks } from '../types'
+import { issueFromBranch, parseRegistryEntry, parseRemote, parseTasks, projectFrom, projectName } from './parse'
 
 type RepoInfo = { top: string; branch: string; project: Project | null }
 
@@ -60,6 +60,30 @@ async function alivePids($: EngineInterface, pids: number[]): Promise<Set<number
   )
 }
 
+/** The change folder: the branch's slug, else the one naming the branch, else the only active one. */
+export async function readTasks($: EngineInterface, top: string, slug: string, branch: string): Promise<Tasks | null> {
+  const root = `${top}/openspec/changes`
+  if (!(await $.fs.exists(root))) {
+    return null
+  }
+  const names = (await $.fs.list(root))
+    .filter(entry => entry.kind === 'dir' && entry.name !== 'archive')
+    .map(entry => entry.name)
+  const texts = new Map<string, string>()
+  for (const name of names) {
+    const text = await $.fs.read(`${root}/${name}/tasks.md`).catch(() => null)
+    if (text !== null) {
+      texts.set(name, text)
+    }
+  }
+  const change =
+    (slug && texts.has(slug) ? slug : undefined) ??
+    (branch ? [...texts].find(([, text]) => text.includes(branch))?.[0] : undefined) ??
+    (texts.size === 1 ? [...texts.keys()][0] : undefined)
+
+  return change === undefined ? null : { change, groups: parseTasks(texts.get(change) ?? '') }
+}
+
 export async function readAgents($: EngineInterface): Promise<Agent[]> {
   const home = await $.env.get('HOME')
   const dir = `${home}/.claude/sessions`
@@ -81,6 +105,8 @@ export async function readAgents($: EngineInterface): Promise<Agent[]> {
       .map(async (entry): Promise<Agent> => {
         const info = await repoInfo($, entry.cwd, now)
         const { number, slug } = issueFromBranch(info?.branch ?? '')
+        const tasks = info ? await readTasks($, info.top, slug, info.branch).catch(() => null) : null
+        const items = tasks?.groups.flatMap(group => group.items) ?? []
 
         return {
           sessionId: entry.sessionId,
@@ -92,6 +118,7 @@ export async function readAgents($: EngineInterface): Promise<Agent[]> {
           branch: info?.branch ?? '',
           issueNumber: number,
           slug,
+          tasks: tasks ? { change: tasks.change, done: items.filter(item => item.isDone).length, total: items.length } : null,
           isSelf: entry.sessionId !== '' && entry.sessionId === selfId,
         }
       }),

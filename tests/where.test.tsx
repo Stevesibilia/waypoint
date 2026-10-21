@@ -176,9 +176,9 @@ test('the repo view lists the live sessions on this repo', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /implementer/ }))?.text).toBe('  ◐ needs you · implementer · #12 profile-texts')
+    expect((await ui.find({ type: 'Text', text: /implementer/ }))?.text).toBe('  ◐ needs you · implementer · #12 profile-texts · tasks 3/4')
     expect((await ui.find({ type: 'Text', text: /architect/ }))?.text).toBe(
-      '  ● working · architect (this session) · #12 profile-texts',
+      '  ● working · architect (this session) · #12 profile-texts · tasks 3/4',
     )
     expect(await ui.find({ type: 'Text', text: /gone/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /spare-se/ })).toBeUndefined()
@@ -196,7 +196,7 @@ test('the all view puts each session under its project, with the issue phase', a
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /implementer/ }))?.text).toBe(
-    '  ◐ needs you · implementer · #12 Profile texts · phase 2/4',
+    '  ◐ needs you · implementer · #12 Profile texts · phase 2/4 · tasks 3/4',
   )
   expect(await ui.find({ type: 'Text', text: /Other sessions/ })).toBeDefined()
   expect((await ui.find({ type: 'Text', text: /abcdef12/ }))?.text).toBe('  ○ idle · abcdef12 · other · #7 x')

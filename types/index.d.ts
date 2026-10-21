@@ -76,6 +76,8 @@ export type Agent = {
   branch: string
   issueNumber: number | null
   slug: string
+  /** The OpenSpec change in the agent's own folder, counted. */
+  tasks: { change: string; done: number; total: number } | null
   isSelf: boolean
 }
 
