@@ -171,6 +171,7 @@ export const bandText = (repo: RepoStatus): string => {
 // Module state: a reload starts it over, and session.start runs again after one.
 let defaultHost = 'github.com'
 let paneColumns = 60
+let isLinking = false
 let isRunning = false
 let queued: { withAll: boolean } | null = null
 let ticker: { cancel: () => void } | null = null
@@ -264,7 +265,10 @@ const refInfo = (path: string | null, number: number) => {
     return undefined
   }
   const title = titles.get(mentionKey(project, number))
-  return path === null && !title ? undefined : { url: issueUrl(project, number), title }
+  if (path === null && !title) {
+    return undefined
+  }
+  return { url: isLinking ? issueUrl(project, number) : undefined, title }
 }
 
 /** The agent's text since the person's last message, plus the final answer. */
@@ -420,6 +424,7 @@ export const register: Register = (on, options) => {
     typeof options.paneColumns === 'number' && Number.isInteger(options.paneColumns) && options.paneColumns > 0
       ? options.paneColumns
       : 60
+  isLinking = options.issueLinks === true
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
