@@ -1,10 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Project, ProjectRow, RepoStatus, Tasks, View } from '../types'
-import { checkProject, fetchIssue, fetchOpenIssues } from './forge'
+import type { Agent, AgentStatus, MentionedIssue, OpenIssue, Project, ProjectRow, RepoStatus, Tasks, View } from '../types'
+import { git, readAgents } from './agents'
+import { checkProject, fetchIssue, fetchIssueSummary, fetchOpenIssues, fetchOpenTitles } from './forge'
+import type { Mention } from './parse'
 import {
+  annotateIssues,
   currentPhase,
+  findMentionsInCommand,
+  findMentionsInText,
   issueFromBranch,
   parseProjectArg,
   parseRemote,
@@ -16,6 +21,9 @@ import {
 
 const PANE = 'waypoint'
 const TICK_MS = 60_000
+// Agents change state within seconds; their reads are local and cheap.
+const AGENT_TICK_MS = 5_000
+const MAX_MENTIONS = 8
 const USAGE = [
   'Usage:',
   '  /where              open the pane',
@@ -32,6 +40,29 @@ const viewAtom = atom({ plugin: 'waypoint', key: 'view' } as const, 'repo')
 const projectsAtom = atom({ plugin: 'waypoint', key: 'projects' } as const, [])
 const loadingAtom = atom({ plugin: 'waypoint', key: 'isLoading' } as const, false)
 const paneAtom = atom({ plugin: 'waypoint', key: 'isPaneOpen' } as const, false)
+const agentsAtom = atom({ plugin: 'waypoint', key: 'agents' } as const, null)
+const mentionsAtom = atom({ plugin: 'waypoint', key: 'mentions' } as const, [])
+
+const mentionKey = (project: Project, number: number) => `${project.host}/${project.path.toLowerCase()}#${number}`
+
+const AGENT_LOOK: Record<AgentStatus, { glyph: string; label: string; color?: 'success' | 'warning' }> = {
+  waiting: { glyph: '◐', label: 'needs you', color: 'warning' },
+  working: { glyph: '●', label: 'working', color: 'success' },
+  idle: { glyph: '○', label: 'idle' },
+  unknown: { glyph: '·', label: 'running' },
+}
+
+/** What an agent is on: its issue, with title and phase when the issue is known, else its branch. */
+const agentDetail = (agent: Agent, issues: readonly OpenIssue[] = []) => {
+  if (agent.issueNumber === null) {
+    return agent.branch || 'no branch'
+  }
+  const issue = issues.find(one => one.number === agent.issueNumber)
+
+  return issue
+    ? `#${issue.number} ${issue.title} · phase ${Math.min(issue.done + 1, issue.total)}/${issue.total}`
+    : `#${agent.issueNumber}${agent.slug ? ` ${agent.slug}` : ''}`
+}
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -40,11 +71,6 @@ const truncate = (text: string, max: number) => (text.length > max ? `${text.sli
 const isProject = (value: unknown): value is Project => {
   const one = value as Project | null
   return typeof one?.host === 'string' && typeof one.path === 'string' && (one.forge === 'github' || one.forge === 'gitlab')
-}
-
-const git = async ($: EngineInterface, args: string[], cwd?: string) => {
-  const run = await $.process.run(['git', ...args], cwd ? { cwd } : undefined).catch(() => null)
-  return run?.exitCode === 0 ? run.stdout.trim() : ''
 }
 
 /** The current repo's project, from `origin`; null outside a repo or without one. */
@@ -147,7 +173,101 @@ let isRunning = false
 let queued: { withAll: boolean } | null = null
 let ticker: { cancel: () => void } | null = null
 let debounce: { cancel: () => void } | null = null
+let agentTicker: { cancel: () => void } | null = null
+let isReadingAgents = false
+// The current repo's project, and the issue titles known for any project, by mentionKey.
+let hereProject: Project | null = null
+const titles = new Map<string, string>()
+const resolving = new Set<string>()
 
+function mentionProject(mention: Mention): Project | null {
+  if (mention.path === null) {
+    return hereProject
+  }
+  return projectFrom(mention.host ?? hereProject?.host ?? defaultHost, mention.path)
+}
+
+async function putMention($: EngineInterface, issue: MentionedIssue) {
+  const key = mentionKey(issue.project, issue.number)
+  await update($, mentionsAtom, list =>
+    [issue, ...list.filter(one => mentionKey(one.project, one.number) !== key)].slice(0, MAX_MENTIONS),
+  )
+}
+
+/** Reads a mentioned issue once; a bare `#N` that names nothing is dropped. */
+async function resolveMention($: EngineInterface, project: Project, number: number) {
+  const key = mentionKey(project, number)
+  if (resolving.has(key)) {
+    return
+  }
+  resolving.add(key)
+  try {
+    const issue = await fetchIssueSummary($, project, number)
+    titles.set(key, issue.title)
+    await putMention($, issue)
+  } catch {
+    // Not an issue there, or the forge cannot be read: nothing to list.
+  } finally {
+    resolving.delete(key)
+  }
+}
+
+/** Moves known mentions to the top and reads new ones, the first named ending first. */
+async function noteMentions($: EngineInterface, mentions: Mention[]) {
+  const known = await read($, mentionsAtom)
+  const keys = new Set<string>()
+  for (const mention of [...mentions].reverse()) {
+    const project = mentionProject(mention)
+    if (!project || mention.number <= 0) {
+      continue
+    }
+    const key = mentionKey(project, mention.number)
+    if (keys.has(key)) {
+      continue
+    }
+    keys.add(key)
+    const found = known.find(one => mentionKey(one.project, one.number) === key)
+    if (found) {
+      await putMention($, found)
+    } else {
+      void resolveMention($, project, mention.number)
+    }
+  }
+}
+
+/** Re-reads the listed mentions, keeping their order. */
+async function refreshMentions($: EngineInterface) {
+  const list = await read($, mentionsAtom)
+  const fresh = await Promise.all(list.map(one => fetchIssueSummary($, one.project, one.number).catch(() => one)))
+  await update($, mentionsAtom, () => fresh)
+}
+
+async function learnTitles($: EngineInterface, project: Project) {
+  for (const [number, title] of await fetchOpenTitles($, project)) {
+    titles.set(mentionKey(project, number), title)
+  }
+}
+
+async function refreshAgents($: EngineInterface) {
+  if (isReadingAgents) {
+    return
+  }
+  isReadingAgents = true
+  try {
+    const agents = await readAgents($)
+    await update($, agentsAtom, () => agents)
+  } catch {
+    // Unreadable registry: the last list stays until a read succeeds.
+  } finally {
+    isReadingAgents = false
+  }
+}
+
+async function tickAgents($: EngineInterface) {
+  if (await read($, paneAtom).catch(() => false)) {
+    await refreshAgents($)
+  }
+}
 
 async function refresh($: EngineInterface, withAll: boolean) {
   queued = { withAll: withAll || (queued?.withAll ?? false) }
@@ -160,8 +280,14 @@ async function refresh($: EngineInterface, withAll: boolean) {
     while (queued) {
       const job = queued
       queued = null
-      const repo = await readRepo($).catch(() => null)
+      const [repo] = await Promise.all([readRepo($).catch(() => null), refreshAgents($)])
       await update($, repoAtom, () => repo)
+      hereProject = repo?.project ?? null
+      const isOpen = await read($, paneAtom)
+      await Promise.all([
+        hereProject ? learnTitles($, hereProject).catch(() => undefined) : undefined,
+        isOpen ? refreshMentions($).catch(() => undefined) : undefined,
+      ])
       if (job.withAll) {
         const rows = await readAll($, await read($, projectsAtom))
         await update($, allAtom, () => rows)
@@ -269,6 +395,8 @@ export const register: Register = (on, options) => {
     await update($, viewAtom, () => (view === 'all' ? 'all' : 'repo'))
     ticker?.cancel()
     ticker = $.clock.every(TICK_MS, () => void kick($))
+    agentTicker?.cancel()
+    agentTicker = $.clock.every(AGENT_TICK_MS, () => void tickAgents($).catch(() => undefined))
     void kick($, false)
 
     return started
@@ -318,6 +446,11 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     const command = e.tool === 'Bash' ? e.command : ''
     const file = 'file_path' in e && typeof e.file_path === 'string' ? e.file_path : ''
+    const url = 'url' in e && typeof e.url === 'string' ? e.url : ''
+    const mentions = [...findMentionsInCommand(command, hereProject?.host ?? null), ...findMentionsInText(url)]
+    if (mentions.length > 0) {
+      void noteMentions($, mentions).catch(() => undefined)
+    }
     const isRelevant =
       /\b(gh|glab)\s+(issue|api|mr|pr)\b/.test(command) ||
       /\bgit\s+(checkout|switch|merge|pull|rebase|reset)\b/.test(command) ||
@@ -328,6 +461,32 @@ export const register: Register = (on, options) => {
     }
 
     return ran
+  })
+
+  // Issue titles beside `#12` in the agent's message: the display only, never the
+  // stored message or what the model reads.
+  on('classic.MessageDisplay', async ($, e, next) => {
+    const shown = await next(e)
+    const text = shown.displayContent ?? e.delta
+    const mentions = findMentionsInText(text)
+    if (mentions.length > 0) {
+      void noteMentions($, mentions).catch(() => undefined)
+    }
+    const project = hereProject
+    if (!project) {
+      return shown
+    }
+    const annotated = annotateIssues(text, number => titles.get(mentionKey(project, number)))
+
+    return annotated === text ? shown : { ...shown, displayContent: annotated }
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (!e.agentId && e.answer) {
+      void noteMentions($, findMentionsInText(e.answer)).catch(() => undefined)
+    }
+    return done
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -346,13 +505,26 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Link, Markdown, Text } = $.ui.resolve(e)
-    const [view, repo, all, projects, isLoading] = await Promise.all([
+    const [view, repo, all, projects, isLoading, agents, mentions] = await Promise.all([
       read($, viewAtom),
       read($, repoAtom),
       read($, allAtom),
       read($, projectsAtom),
       read($, loadingAtom),
+      read($, agentsAtom),
+      read($, mentionsAtom),
     ])
+
+    const agentRow = (agent: Agent, detail: string) => {
+      const look = AGENT_LOOK[agent.status]
+      return (
+        <Text key={`agent-${agent.sessionId || agent.cwd}`} color={look.color} dimColor={!look.color} wrap="truncate-end">
+          {'  '}
+          {look.glyph} {look.label} · {agent.name}
+          {agent.isSelf ? ' (this session)' : ''} · {detail}
+        </Text>
+      )
+    }
 
     const header = (
       <Box flexDirection="row" gap={1}>
@@ -365,6 +537,9 @@ export const register: Register = (on, options) => {
 
     if (view === 'all') {
       const here = repo?.project ?? null
+      const others = (agents ?? []).filter(
+        agent => !agent.project || !projects.some(one => agent.project !== null && sameProject(one, agent.project)),
+      )
       return (
         <Box flexDirection="column">
           {header}
@@ -378,6 +553,9 @@ export const register: Register = (on, options) => {
                 {projectName(row.project)}
                 {here && sameProject(here, row.project) ? '  ← here' : ''}
               </Text>
+              {(agents ?? [])
+                .filter(agent => agent.project !== null && sameProject(agent.project, row.project))
+                .map(agent => agentRow(agent, agentDetail(agent, row.issues)))}
               {row.error && <Text dimColor>  {row.error}</Text>}
               {!row.error && row.issues.length === 0 && <Text dimColor>  nothing in progress</Text>}
               {row.issues.slice(0, 5).map(issue => (
@@ -391,6 +569,12 @@ export const register: Register = (on, options) => {
               {row.issues.length > 5 && <Text dimColor>  and {row.issues.length - 5} more</Text>}
             </Box>
           ))}
+          {others.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>Other sessions</Text>
+              {others.map(agent => agentRow(agent, `${agent.repoName} · ${agentDetail(agent)}`))}
+            </Box>
+          )}
         </Box>
       )
     }
@@ -410,6 +594,9 @@ export const register: Register = (on, options) => {
     const at = currentPhase(phases)
     const tasks = repo.tasks
     const openGroup = tasks?.groups.find(group => group.items.some(item => !item.isDone))
+    const here = (agents ?? []).filter(agent =>
+      project !== null && agent.project !== null ? sameProject(agent.project, project) : agent.repoName === repo.name,
+    )
 
     return (
       <Box flexDirection="column">
@@ -460,6 +647,34 @@ export const register: Register = (on, options) => {
                         {item.isDone ? '✓' : '○'} {truncate(item.text, 120)}
                       </Text>
                     ))}
+                </Box>
+              )
+            })}
+          </Box>
+        )}
+
+        {here.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>Sessions on this repo</Text>
+            {here.map(agent => agentRow(agent, agentDetail(agent)))}
+          </Box>
+        )}
+
+        {mentions.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>Mentioned in this session</Text>
+            {mentions.map(issue => {
+              const isHere = project !== null && sameProject(issue.project, project)
+              const ref = `${isHere ? '' : issue.project.path}${issue.isPullRequest && issue.project.forge === 'gitlab' ? '!' : '#'}${issue.number}`
+              const phase = issue.total > 0 ? ` · phase ${Math.min(issue.done + 1, issue.total)}/${issue.total}` : ''
+              return (
+                <Box key={`mention-${mentionKey(issue.project, issue.number)}`} flexDirection="row" gap={1}>
+                  <Link href={issue.url} label={`  ${ref}`} />
+                  <Text dimColor={issue.state !== 'open' && issue.state !== 'opened'} wrap="truncate-end">
+                    {issue.isPullRequest ? 'PR ' : ''}
+                    {issue.title} · {issue.state}
+                    {phase}
+                  </Text>
                 </Box>
               )
             })}

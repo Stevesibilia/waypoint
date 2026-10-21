@@ -19,6 +19,15 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
+const SESSIONS = '/home/u/.claude/sessions'
+const REGISTRY: Record<string, object> = {
+  '101.json': { pid: 101, sessionId: 's-101', cwd: '/work/cronista', status: 'waiting', name: 'implementer' },
+  '102.json': { pid: 102, sessionId: 's-102', cwd: '/work/cronista', status: 'busy', name: 'architect' },
+  '103.json': { pid: 103, sessionId: 's-103', cwd: '/work/cronista', status: 'busy', name: 'gone' },
+  '104.json': { pid: 104, sessionId: 'abcdef1234', cwd: '/work/other/sub', status: 'idle' },
+  '105.json': { pid: 105, sessionId: 'spare-session', cwd: '/work/cronista', status: 'idle' },
+}
+
 const RUN = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
 
 /** `/where <args>` as typed at the prompt. */
@@ -37,6 +46,15 @@ const world = (on: On, store: Record<string, unknown> = {}) => {
     })
     const args = e.argv.join(' ')
     if (args === 'git rev-parse --show-toplevel') return out('/work/cronista\n')
+    if (args === 'ps -o pid=,command= -p 101,102,103,104,105') {
+      return out('  101 claude\n  102 claude --resume x\n  104 claude\n  105 claude bg-spare --bg-spare /tmp/s.sock\n')
+    }
+    if (args === 'git -C /work/cronista rev-parse --show-toplevel --abbrev-ref HEAD') {
+      return out('/work/cronista\nfix/12-profile-texts\n')
+    }
+    if (args === 'git -C /work/cronista remote get-url origin') return out('git@github.com:steve/cronista.git\n')
+    if (args === 'git -C /work/other/sub rev-parse --show-toplevel --abbrev-ref HEAD') return out('/work/other\nfeat/7-x\n')
+    if (args === 'git -C /work/other/sub remote get-url origin') return out('git@github.com:steve/other.git\n')
     if (args === 'git branch --show-current') return out('fix/12-profile-texts\n')
     if (args === 'git remote get-url origin') return out('git@github.com:steve/cronista.git\n')
     if (args.endsWith('repos/steve/cronista/issues/12')) return out(ISSUE)
@@ -46,22 +64,32 @@ const world = (on: On, store: Record<string, unknown> = {}) => {
     if (args.includes('/pulls?')) return out([])
     if (args.endsWith('repos/steve/cronista') || args.endsWith('projects/tools%2Farchive')) return out({})
     if (args.includes('projects/tools%2Farchive/issues?')) return out([])
-    if (args.includes('repos/steve/cronista/issues?')) return out([ISSUE, { ...ISSUE, number: 13, body: '- [x] done' }])
+    if (args.includes('repos/steve/cronista/issues?')) return out([ISSUE, { ...ISSUE, number: 13, title: 'Old bug', body: '- [x] done' }])
+    if (args.endsWith('repos/steve/cronista/issues/13')) return out({ ...ISSUE, number: 13, title: 'Old bug', state: 'closed', body: '' })
+    if (args.endsWith('repos/steve/cronista/issues/77')) return { value: { ...RUN, exitCode: 1, stderr: 'gh: Not Found (HTTP 404)' } }
     return { value: { ...RUN, exitCode: 1, stderr: `unexpected ${args}` } }
   })
-  on('fs.exists', (_, e) => ({ value: e.path === '/work/cronista/openspec/changes' }))
-  on('fs.list', () => ({
-    value: [
-      { name: 'profile-texts', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
-      { name: 'archive', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
-    ],
+  mock.env(on, { HOME: '/home/u' })
+  on('session.id', () => ({ value: 's-102' }))
+  const reads: string[] = []
+  on('fs.exists', (_, e) => ({ value: e.path === '/work/cronista/openspec/changes' || e.path === SESSIONS }))
+  const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
+  on('fs.list', (_, e) => ({
+    value:
+      e.path === SESSIONS
+        ? [...Object.keys(REGISTRY), '101.abc.key'].map(name => entry(name, 'file'))
+        : [entry('profile-texts', 'dir'), entry('archive', 'dir')],
   }))
-  on('fs.read', (_, e) => ({ value: e.path.endsWith('profile-texts/tasks.md') ? TASKS : '' }))
+  on('fs.read', (_, e) => {
+    reads.push(e.path)
+    const registry = REGISTRY[e.path.slice(SESSIONS.length + 1)]
+    return { value: registry ? JSON.stringify(registry) : e.path.endsWith('profile-texts/tasks.md') ? TASKS : '' }
+  })
   on('command.register', () => ({ value: { command: 'where' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
 
-  return { calls, clock }
+  return { calls, clock, reads }
 }
 
 test('the band shows the issue, the phase and the tasks', async ($, on) => {
@@ -106,7 +134,7 @@ test('/where add tracks the current repo and All lists issues in progress', asyn
   await $.command.run(where('all'))
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Profile texts/ }))?.text).toBe('Profile texts · phase 2/4')
+  expect((await ui.find({ type: 'Text', text: /^Profile texts/ }))?.text).toBe('Profile texts · phase 2/4')
   expect(await ui.find({ type: 'Text', text: /#13/ })).toBeUndefined()
   await ui.unmount()
 
@@ -137,5 +165,66 @@ test('with All open, a project added shows up without pressing Refresh', async (
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /^archive/ }))?.text).toBe('archive')
   expect(await ui.find({ type: 'Text', text: /nothing in progress/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the repo view lists the live sessions on this repo', async ($, on) => {
+  const { clock, reads } = world(on)
+  await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
+  await $.command.run(where('repo'))
+  await clock.settle()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect((await ui.find({ type: 'Text', text: /implementer/ }))?.text).toBe('  ◐ needs you · implementer · #12 profile-texts')
+    expect((await ui.find({ type: 'Text', text: /architect/ }))?.text).toBe(
+      '  ● working · architect (this session) · #12 profile-texts',
+    )
+    expect(await ui.find({ type: 'Text', text: /gone/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /spare-se/ })).toBeUndefined()
+    await ui.unmount()
+  }
+  expect(reads.some(path => path.endsWith('.key'))).toBe(false)
+})
+
+test('the all view puts each session under its project, with the issue phase', async ($, on) => {
+  const { clock } = world(on)
+  await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
+  await $.command.run(where('add'))
+  await $.command.run(where('all'))
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /implementer/ }))?.text).toBe(
+    '  ◐ needs you · implementer · #12 Profile texts · phase 2/4',
+  )
+  expect(await ui.find({ type: 'Text', text: /Other sessions/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /abcdef12/ }))?.text).toBe('  ○ idle · abcdef12 · other · #7 x')
+  await ui.unmount()
+})
+
+test('the agent message shows issue titles, and the repo view lists what it mentioned', async ($, on) => {
+  const { clock } = world(on)
+  // The engine beneath: no settings hook rewrites the display.
+  on('classic.MessageDisplay', () => ({}))
+  await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const shown = await $.classic.MessageDisplay({
+    turn_id: 't1',
+    message_id: 'm1',
+    index: 0,
+    final: true,
+    delta: 'Next: #12, #13 and #77.',
+  })
+  expect(shown.displayContent).toBe('Next: #12 (Profile texts), #13 (Old bug) and #77.')
+
+  await $.command.run(where('repo'))
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Mentioned in this session/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^Old bug/ }))?.text).toBe('Old bug · closed')
+  expect((await ui.find({ type: 'Text', text: /^Profile texts · open/ }))?.text).toBe('Profile texts · open · phase 2/4')
+  expect(await ui.find({ type: 'Text', text: /#77/ })).toBeUndefined()
   await ui.unmount()
 })

@@ -1,10 +1,14 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  annotateIssues,
   currentPhase,
+  findMentionsInCommand,
+  findMentionsInText,
   issueFromBranch,
   parseChecklist,
   parsePhases,
+  parseRegistryEntry,
   parseProjectArg,
   parseRemote,
   parseTasks,
@@ -82,4 +86,57 @@ test('/where add arguments', () => {
     path: 'tools/archive',
   })
   expect(parseProjectArg('repo', 'github.com')).toBeNull()
+})
+
+test('a registry entry reads with every field optional', () => {
+  expect(parseRegistryEntry('{"pid":7,"sessionId":"abc123456","cwd":"/w","status":"busy","name":"impl"}')).toEqual({
+    pid: 7,
+    sessionId: 'abc123456',
+    cwd: '/w',
+    status: 'working',
+    name: 'impl',
+  })
+  expect(parseRegistryEntry('{"pid":7,"cwd":"/w","status":"new-state"}')).toEqual({
+    pid: 7,
+    sessionId: '',
+    cwd: '/w',
+    status: 'unknown',
+    name: 'pid 7',
+  })
+  expect(parseRegistryEntry('{"cwd":"/w"}')).toBeNull()
+  expect(parseRegistryEntry('not json')).toBeNull()
+})
+
+test('mentions in the agent text: bare, qualified and URLs, never in code', () => {
+  const text = 'Next: #12 (TLS), #11, #32.\nSee steve/other#3, https://github.com/a/b/issues/9 and `#99`.\n```\n#98\n```'
+
+  expect(findMentionsInText(text)).toEqual([
+    { host: 'github.com', path: 'a/b', number: 9 },
+    { host: null, path: 'steve/other', number: 3 },
+    { host: null, path: null, number: 12 },
+    { host: null, path: null, number: 11 },
+    { host: null, path: null, number: 32 },
+  ])
+  expect(findMentionsInText('color: #fff; &#39; page#2')).toEqual([])
+})
+
+test('mentions in gh and glab commands', () => {
+  expect(findMentionsInCommand('gh issue view 31 -R Stevesibilia/rpg-promptbook --comments')).toEqual([
+    { host: null, path: 'Stevesibilia/rpg-promptbook', number: 31 },
+  ])
+  expect(findMentionsInCommand('glab issue note 80 --message "x"')).toEqual([{ host: null, path: null, number: 80 }])
+  expect(findMentionsInCommand('glab api --hostname gitlab.example.com "projects/tools%2Farchive/issues/80/notes"')).toEqual([
+    { host: 'gitlab.example.com', path: 'tools/archive', number: 80 },
+  ])
+  expect(findMentionsInCommand('gh api repos/a/b/issues/7')).toEqual([{ host: 'github.com', path: 'a/b', number: 7 }])
+  expect(findMentionsInCommand('git log --oneline')).toEqual([])
+})
+
+test('titles go beside bare references, once, outside code', () => {
+  const titleOf = (n: number) => ({ 12: 'TLS to the database on the homelab', 11: 'Sign-in throttle' } as Record<number, string>)[n]
+
+  expect(annotateIssues('Next: #12, #11 (done), #32, `#12`.', titleOf)).toBe(
+    'Next: #12 (TLS to the database on the homelab), #11 (done), #32, `#12`.',
+  )
+  expect(annotateIssues('```\n#12\n```', titleOf)).toBe('```\n#12\n```')
 })

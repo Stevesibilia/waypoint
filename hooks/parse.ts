@@ -1,6 +1,6 @@
 // Pure parsing: no `$`, so the tests reach every function directly.
 
-import type { Check, Forge, Project, TaskGroup } from '../types'
+import type { AgentStatus, Check, Forge, Project, TaskGroup } from '../types'
 
 const CHECKBOX = /^(\s*)[-*+] \[([ xX])\] (.+)$/
 const FENCE = /^\s*(```|~~~)/
@@ -122,4 +122,136 @@ export const currentPhase = (phases: readonly Check[]): number => {
   const open = phases.findIndex(phase => !phase.isDone)
 
   return open === -1 ? phases.length + 1 : open + 1
+}
+
+export type RegistryEntry = { pid: number; sessionId: string; cwd: string; status: AgentStatus; name: string }
+
+const STATUSES: Record<string, AgentStatus> = { busy: 'working', waiting: 'waiting', idle: 'idle' }
+
+/**
+ * One `~/.claude/sessions/<pid>.json`. The format is Claude Code's own and
+ * undocumented, so every field is optional: what is missing reads as unknown.
+ */
+export const parseRegistryEntry = (text: string): RegistryEntry | null => {
+  let raw: Record<string, unknown>
+  try {
+    raw = JSON.parse(text) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const pid = Number(raw.pid)
+  const cwd = typeof raw.cwd === 'string' ? raw.cwd : ''
+  if (!Number.isInteger(pid) || pid <= 0 || !cwd) {
+    return null
+  }
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : ''
+
+  return {
+    pid,
+    sessionId,
+    cwd,
+    status: STATUSES[String(raw.status)] ?? 'unknown',
+    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : sessionId.slice(0, 8) || `pid ${pid}`,
+  }
+}
+
+/** An issue named somewhere; `host` and `path` null mean the current repo's. */
+export type Mention = { host: string | null; path: string | null; number: number }
+
+const GITHUB_URL = /https?:\/\/([\w.-]*github[\w.-]*)\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g
+const GITLAB_URL = /https?:\/\/([\w.-]+)\/((?:[\w.-]+\/)+[\w.-]+)\/-\/(?:issues|work_items)\/(\d+)/g
+const QUALIFIED = /(?<![\w/.-])([\w.-]+(?:\/[\w.-]+)+)#(\d{1,6})(?!\w)/g
+const BARE = /(?<![\w&/.#-])#(\d{1,6})(?!\w)/g
+const CLI_ISSUE = /\b(gh|glab)\s+(?:issue|pr|mr)\s+(?:view|edit|comment|note|close|reopen|update|checkout|diff|merge|subscribe)\s+(\d+)/
+const CLI_REPO = /(?:-R|--repo)[ =]["']?([^\s"']+)/
+const GH_API = /\brepos\/([\w.-]+\/[\w.-]+)\/(?:issues|pulls)\/(\d+)/
+const GLAB_API = /\bprojects\/([^/\s"']+)\/(?:issues|merge_requests)\/(\d+)/
+const API_HOST = /--hostname[ =]["']?([\w.-]+)/
+
+/** Text with fenced blocks and inline code blanked out, so `#1` in code is no mention. */
+const prose = (text: string) => {
+  let isFenced = false
+
+  return text
+    .split('\n')
+    .map(line => {
+      if (FENCE.test(line)) {
+        isFenced = !isFenced
+        return ''
+      }
+      return isFenced ? '' : line.replace(/`[^`]*`/g, '')
+    })
+    .join('\n')
+}
+
+const urlMentions = (text: string): Mention[] => [
+  ...[...text.matchAll(GITHUB_URL)].map(m => ({ host: (m[1] ?? '').toLowerCase(), path: m[2] ?? '', number: Number(m[3]) })),
+  ...[...text.matchAll(GITLAB_URL)].map(m => ({ host: (m[1] ?? '').toLowerCase(), path: m[2] ?? '', number: Number(m[3]) })),
+]
+
+/** Issues named in what the agent wrote: URLs, `group/repo#12`, and bare `#12`. */
+export const findMentionsInText = (text: string): Mention[] => {
+  const plain = prose(text)
+  const withoutUrls = plain.replace(/https?:\/\/\S+/g, '')
+
+  return [
+    ...urlMentions(plain),
+    ...[...withoutUrls.matchAll(QUALIFIED)].map(m => ({ host: null, path: m[1] ?? '', number: Number(m[2]) })),
+    ...[...withoutUrls.matchAll(BARE)].map(m => ({ host: null, path: null, number: Number(m[1]) })),
+  ]
+}
+
+/** Issues a `gh` or `glab` command reads or changes, and issue URLs in it. */
+export const findMentionsInCommand = (command: string, defaultHost: string | null = null): Mention[] => {
+  const found = urlMentions(command)
+  const cli = CLI_ISSUE.exec(command)
+  if (cli) {
+    const repo = CLI_REPO.exec(command)?.[1]
+    const project = repo ? parseProjectArg(repo, defaultHost ?? 'github.com') : null
+    found.push({
+      host: project && repo?.split('/').length !== 2 ? project.host : null,
+      path: project?.path ?? null,
+      number: Number(cli[2]),
+    })
+  }
+  const host = API_HOST.exec(command)?.[1]?.toLowerCase() ?? null
+  const gh = GH_API.exec(command)
+  if (gh && /\bgh\s+api\b/.test(command)) {
+    found.push({ host: host ?? 'github.com', path: gh[1] ?? '', number: Number(gh[2]) })
+  }
+  const gl = GLAB_API.exec(command)
+  if (gl && /\bglab\s+api\b/.test(command) && gl[1] !== ':id') {
+    found.push({ host, path: decodeURIComponent(gl[1] ?? ''), number: Number(gl[2]) })
+  }
+
+  return found
+}
+
+/** `#12` → `#12 (title)` for every bare reference whose title is known, outside code. */
+export const annotateIssues = (text: string, titleOf: (number: number) => string | undefined): string => {
+  let isFenced = false
+
+  return text
+    .split('\n')
+    .map(line => {
+      if (FENCE.test(line)) {
+        isFenced = !isFenced
+        return line
+      }
+      if (isFenced) {
+        return line
+      }
+      return line
+        .split(/(`[^`]*`)/)
+        .map((part, index) =>
+          index % 2 === 1
+            ? part
+            : part.replace(new RegExp(`${BARE.source}(?!\\s*\\()`, 'g'), (whole: string, digits: string) => {
+                const title = titleOf(Number(digits))
+                return title ? `${whole} (${title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title})` : whole
+              }),
+        )
+        .join('')
+    })
+    .join('\n')
 }

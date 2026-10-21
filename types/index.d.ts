@@ -50,6 +50,35 @@ export type ProjectRow = { project: Project; issues: OpenIssue[]; error: string 
 
 export type View = 'repo' | 'all'
 
+/** An issue or PR the agent named in this session, as last read. */
+export type MentionedIssue = {
+  project: Project
+  number: number
+  title: string
+  state: string
+  url: string
+  isPullRequest: boolean
+  done: number
+  total: number
+}
+
+/** Claude Code's own status from its session registry: busy, waiting (needs the person), idle. */
+export type AgentStatus = 'working' | 'waiting' | 'idle' | 'unknown'
+
+/** A live Claude Code session on this machine, and the issue its branch points at. */
+export type Agent = {
+  sessionId: string
+  name: string
+  status: AgentStatus
+  cwd: string
+  project: Project | null
+  repoName: string
+  branch: string
+  issueNumber: number | null
+  slug: string
+  isSelf: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     waypoint: {
@@ -57,6 +86,8 @@ declare module 'claude-code' {
       all: ProjectRow[] | null
       view: View
       projects: Project[]
+      agents: Agent[] | null
+      mentions: MentionedIssue[]
       isLoading: boolean
       /** Kept here, not in the module, so a reload knows the pane is still open. */
       isPaneOpen: boolean

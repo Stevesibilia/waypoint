@@ -3,7 +3,7 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import type { Comment, Issue, Link, OpenIssue, Project } from '../types'
+import type { Comment, Issue, Link, MentionedIssue, OpenIssue, Project } from '../types'
 import { parsePhases } from './parse'
 
 type Json = Record<string, unknown>
@@ -126,3 +126,39 @@ const toLink = (raw: Json, state: string): Link => ({
   title: text(raw.title),
   state,
 })
+
+/** One issue or PR in brief, for a mention: title, state and checklist progress. */
+export async function fetchIssueSummary($: EngineInterface, project: Project, number: number): Promise<MentionedIssue> {
+  const raw = (await api(
+    $,
+    project,
+    project.forge === 'github' ? `repos/${project.path}/issues/${number}` : `${gitlabId(project)}/issues/${number}`,
+  )) as Json
+  const phases = parsePhases(text(raw.body ?? raw.description))
+
+  return {
+    project,
+    number,
+    title: text(raw.title),
+    state: raw.pull_request && (raw.pull_request as Json).merged_at ? 'merged' : text(raw.state),
+    url: text(raw.html_url ?? raw.web_url),
+    isPullRequest: raw.pull_request !== undefined,
+    done: phases.filter(phase => phase.isDone).length,
+    total: phases.length,
+  }
+}
+
+/** Titles of the open issues (and, on GitHub, PRs), so a mention can be named at once. */
+export async function fetchOpenTitles($: EngineInterface, project: Project): Promise<Map<number, string>> {
+  const issues = list(
+    await api(
+      $,
+      project,
+      project.forge === 'github'
+        ? `repos/${project.path}/issues?state=open&per_page=100`
+        : `${gitlabId(project)}/issues?state=opened&per_page=100`,
+    ),
+  )
+
+  return new Map(issues.map(one => [Number(one.number ?? one.iid), text(one.title)]))
+}
