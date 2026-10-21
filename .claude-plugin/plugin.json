@@ -1,6 +1,6 @@
 {
   "name": "waypoint",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Shows which phase a change is in, from the issue's checklist and the OpenSpec tasks, for the current repo and every tracked project.",
   "author": {
     "name": "Stefano Sibilia"

@@ -203,24 +203,33 @@ test('the all view puts each session under its project, with the issue phase', a
   await ui.unmount()
 })
 
-test('the agent message shows issue titles, and the repo view lists what it mentioned', async ($, on) => {
+test('the agent message shows issue links and titles, and both views list what it mentioned', async ($, on) => {
   const { clock } = world(on)
-  // The engine beneath: no settings hook rewrites the display.
-  on('classic.MessageDisplay', () => ({}))
+  // The engine beneath: draws a message block as markdown, ends a turn as told.
+  on('ui.render', { component: 'AssistantMessage' }, ($, e) => {
+    const { Markdown } = $.ui.resolve(e)
+    return <Markdown key="text" text={e.props.text} />
+  })
+  on('session.messages', () => ({ value: [{ role: 'assistant', text: 'Looking at #13.', toolUses: [] }] }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
   await $.session.start({ cwd: '/work/cronista', surface: 'terminal', isInteractive: true })
   await clock.settle()
 
-  const shown = await $.classic.MessageDisplay({
-    turn_id: 't1',
-    message_id: 'm1',
-    index: 0,
-    final: true,
-    delta: 'Next: #12, #13 and #77.',
-  })
-  expect(shown.displayContent).toBe(
-    'Next: [#12](https://github.com/steve/cronista/issues/12) (Profile texts), [#13](https://github.com/steve/cronista/issues/13) (Old bug) and #77.',
-  )
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const message = await $.ui.mount({
+      plugin: 'waypoint',
+      component: 'AssistantMessage',
+      props: { text: 'Next: #12 and #77, see steve/other#3.', isFirstOfReply: true },
+      surface,
+    })
+    expect((await message.find({ key: 'text' }))?.text).toBe(
+      'Next: [#12](https://github.com/steve/cronista/issues/12) (Profile texts) and #77, see [steve/other#3](https://github.com/steve/other/issues/3).',
+    )
+    await message.unmount()
+  }
 
+  await $.turn.complete({ answer: 'Next: #12 and #77.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.settle()
   await $.command.run(where('repo'))
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })

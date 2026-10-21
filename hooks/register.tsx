@@ -207,6 +207,7 @@ async function resolveMention($: EngineInterface, project: Project, number: numb
     const issue = await fetchIssueSummary($, project, number)
     titles.set(key, issue.title)
     await putMention($, issue)
+    $.ui.invalidate('ui.render')
   } catch {
     // Not an issue there, or the forge cannot be read: nothing to list.
   } finally {
@@ -245,9 +246,41 @@ async function refreshMentions($: EngineInterface) {
 }
 
 async function learnTitles($: EngineInterface, project: Project) {
+  let isNew = false
   for (const [number, title] of await fetchOpenTitles($, project)) {
-    titles.set(mentionKey(project, number), title)
+    const key = mentionKey(project, number)
+    isNew ||= titles.get(key) !== title
+    titles.set(key, title)
   }
+  if (isNew) {
+    $.ui.invalidate('ui.render')
+  }
+}
+
+/** A bare `#N` links only when it is known to be an issue here; `group/repo#N` names its repo. */
+const refInfo = (path: string | null, number: number) => {
+  const project = path === null ? hereProject : projectFrom(hereProject?.host ?? defaultHost, path)
+  if (!project) {
+    return undefined
+  }
+  const title = titles.get(mentionKey(project, number))
+  return path === null && !title ? undefined : { url: issueUrl(project, number), title }
+}
+
+/** The agent's text since the person's last message, plus the final answer. */
+async function noteTurnMentions($: EngineInterface, answer: string) {
+  const rows = await $.session.messages().catch(() => [])
+  const texts = [answer]
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]
+    if (!row || (row.role === 'user' && row.text.trim() !== '' && !row.toolResults?.length)) {
+      break
+    }
+    if (row.role === 'assistant') {
+      texts.push(row.text)
+    }
+  }
+  await noteMentions($, texts.reverse().flatMap(findMentionsInText))
 }
 
 async function refreshAgents($: EngineInterface) {
@@ -479,34 +512,22 @@ export const register: Register = (on, options) => {
     return ran
   })
 
-  // Issue titles beside `#12` in the agent's message: the display only, never the
-  // stored message or what the model reads.
-  on('classic.MessageDisplay', async ($, e, next) => {
-    const shown = await next(e)
-    const text = shown.displayContent ?? e.delta
-    const mentions = findMentionsInText(text)
-    if (mentions.length > 0) {
-      void noteMentions($, mentions).catch(() => undefined)
-    }
-    // A bare `#N` links only when it is known to be an issue here; `group/repo#N` names its repo.
-    const annotated = annotateIssues(text, (path, number) => {
-      const project = path === null ? hereProject : projectFrom(hereProject?.host ?? defaultHost, path)
-      if (!project) {
-        return undefined
-      }
-      const title = titles.get(mentionKey(project, number))
-      return path === null && !title ? undefined : { url: issueUrl(project, number), title }
-    })
-
-    return annotated === text ? shown : { ...shown, displayContent: annotated }
-  })
-
+  // Mentions from every block the agent wrote this turn, read once it ends,
+  // so a reference half streamed (`#1` of `#12`) is never looked up.
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    if (!e.agentId && e.answer) {
-      void noteMentions($, findMentionsInText(e.answer)).catch(() => undefined)
+    if (!e.agentId) {
+      void noteTurnMentions($, e.answer).catch(() => undefined)
     }
     return done
+  })
+
+  // Links and titles for `#12` in the agent's messages: the drawing only,
+  // never the stored message or what the model reads.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const text = e.props.text
+    const annotated = annotateIssues(text, refInfo)
+    return annotated === text ? next(e) : next({ ...e, props: { ...e.props, text: annotated } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
