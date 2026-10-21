@@ -13,6 +13,7 @@ import {
   parseRemote,
   parseTasks,
 } from '../hooks/parse'
+import type { RefInfo } from '../hooks/parse'
 
 test('the checklist keeps top-level boxes outside code fences', () => {
   const body = [
@@ -132,15 +133,27 @@ test('mentions in gh and glab commands', () => {
   expect(findMentionsInCommand('git log --oneline')).toEqual([])
 })
 
-test('titles go beside bare references, once, outside code', () => {
-  const titleOf = (n: number) => ({ 12: 'TLS to the database on the homelab', 11: 'Sign-in throttle' } as Record<number, string>)[n]
+test('references become links, with titles beside them, outside code', () => {
+  const titles: Record<number, string> = { 12: 'TLS to the database on the homelab', 11: 'Sign-in throttle' }
+  const lookup = (path: string | null, n: number): RefInfo | undefined => {
+    if (path !== null) {
+      return { url: `https://github.com/${path}/issues/${n}` }
+    }
+    const title = titles[n]
+    return title ? { url: `https://github.com/s/p/issues/${n}`, title } : undefined
+  }
 
-  expect(annotateIssues('Next: #12, #11 (done), #32, `#12`.', titleOf)).toBe(
-    'Next: #12 (TLS to the database on the homelab), #11 (done), #32, `#12`.',
+  expect(annotateIssues('Next: #12, #11 (done), #32, `#12`.', lookup)).toBe(
+    'Next: [#12](https://github.com/s/p/issues/12) (TLS to the database on the homelab), [#11](https://github.com/s/p/issues/11) (done), #32, `#12`.',
   )
-  expect(annotateIssues('```\n#12\n```', titleOf)).toBe('```\n#12\n```')
-  expect(annotateIssues('| #12 TLS to the database on the homelab | x |', titleOf)).toBe(
-    '| #12 TLS to the database on the homelab | x |',
+  expect(annotateIssues('See Stevesibilia/rpg-promptbook#31 now.', lookup)).toBe(
+    'See [Stevesibilia/rpg-promptbook#31](https://github.com/Stevesibilia/rpg-promptbook/issues/31) now.',
   )
-  expect(annotateIssues('**#11** · sign-in throttle, moot now', titleOf)).toBe('**#11** · sign-in throttle, moot now')
+  expect(annotateIssues('```\n#12\n```', lookup)).toBe('```\n#12\n```')
+  expect(annotateIssues('| #12 TLS to the database on the homelab |', lookup)).toBe(
+    '| [#12](https://github.com/s/p/issues/12) TLS to the database on the homelab |',
+  )
+  expect(annotateIssues('[#12](https://x/1) and https://github.com/a/b/issues/3#issuecomment-9', lookup)).toBe(
+    '[#12](https://x/1) and https://github.com/a/b/issues/3#issuecomment-9',
+  )
 })

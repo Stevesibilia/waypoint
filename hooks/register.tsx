@@ -10,6 +10,7 @@ import {
   currentPhase,
   findMentionsInCommand,
   findMentionsInText,
+  issueUrl,
   issueFromBranch,
   parseProjectArg,
   parseRemote,
@@ -487,11 +488,15 @@ export const register: Register = (on, options) => {
     if (mentions.length > 0) {
       void noteMentions($, mentions).catch(() => undefined)
     }
-    const project = hereProject
-    if (!project) {
-      return shown
-    }
-    const annotated = annotateIssues(text, number => titles.get(mentionKey(project, number)))
+    // A bare `#N` links only when it is known to be an issue here; `group/repo#N` names its repo.
+    const annotated = annotateIssues(text, (path, number) => {
+      const project = path === null ? hereProject : projectFrom(hereProject?.host ?? defaultHost, path)
+      if (!project) {
+        return undefined
+      }
+      const title = titles.get(mentionKey(project, number))
+      return path === null && !title ? undefined : { url: issueUrl(project, number), title }
+    })
 
     return annotated === text ? shown : { ...shown, displayContent: annotated }
   })

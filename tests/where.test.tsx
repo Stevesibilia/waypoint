@@ -217,7 +217,9 @@ test('the agent message shows issue titles, and the repo view lists what it ment
     final: true,
     delta: 'Next: #12, #13 and #77.',
   })
-  expect(shown.displayContent).toBe('Next: #12 (Profile texts), #13 (Old bug) and #77.')
+  expect(shown.displayContent).toBe(
+    'Next: [#12](https://github.com/steve/cronista/issues/12) (Profile texts), [#13](https://github.com/steve/cronista/issues/13) (Old bug) and #77.',
+  )
 
   await $.command.run(where('repo'))
   await clock.settle()
