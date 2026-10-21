@@ -1,0 +1,20 @@
+{
+  "name": "waypoint",
+  "version": "0.1.0",
+  "description": "Shows which phase a change is in, from the issue's checklist and the OpenSpec tasks, for the current repo and every tracked project.",
+  "author": {
+    "name": "Stefano Sibilia"
+  },
+  "homepage": "https://github.com/Stevesibilia/waypoint",
+  "repository": "https://github.com/Stevesibilia/waypoint",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "defaultHost": {
+      "type": "string",
+      "title": "Default host",
+      "description": "Host used by /where add when given a bare group/repo path, e.g. github.com or gitlab.example.com.",
+      "default": "github.com"
+    }
+  }
+}

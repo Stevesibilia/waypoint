@@ -1,0 +1,5 @@
+{
+  "name": "waypoint",
+  "owner": { "name": "Stefano Sibilia" },
+  "plugins": [{ "name": "waypoint", "source": "./" }]
+}
